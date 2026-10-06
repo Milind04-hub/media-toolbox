@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy this file to config.json and edit. config.json is ignored by git.",
+
+  "_host": "127.0.0.1 (default) = this PC only. Use 0.0.0.0 to reach it from your phone or another device. The app has NO password, so only do that on a private network such as Tailscale, or behind a VPN.",
+  "host": "127.0.0.1",
+  "port": 5000,
+
+  "_library_roots": "Extra folders the 'Choose from this PC' picker may read, as id: [label, path]. Downloads/Videos/Pictures/Desktop are included automatically. Nothing outside these folders is reachable.",
+  "library_roots": {
+    "icloud": ["iCloud Photos", "F:\\iCloudPhotos\\Photos"],
+    "onedrive": ["OneDrive Pictures", "~/OneDrive/Pictures"]
+  }
+}

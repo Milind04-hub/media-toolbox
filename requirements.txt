@@ -1,0 +1,14 @@
+# Core
+flask
+yt-dlp
+imageio-ffmpeg      # bundles ffmpeg, no separate install needed
+Pillow
+pymupdf             # PDF tools
+imageio             # EXR reading (via the FreeImage plugin)
+pillow-heif         # iPhone HEIC photos
+
+# Vocal/instrumental separation. CPU by default; for an NVIDIA GPU install the
+# CUDA build of torch instead — see the README.
+demucs
+torch
+torchaudio

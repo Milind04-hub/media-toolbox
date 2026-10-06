@@ -1,0 +1,23 @@
+# Your media and generated files — never commit these
+output/
+uploads/
+thumbs/
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.zip
+
+# Logs that contain device/IP details
+diag_log.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local editor/tool state
+.claude/
+
+config.json
