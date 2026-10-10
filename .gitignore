@@ -21,3 +21,7 @@ venv/
 .claude/
 
 config.json
+
+# third-party agent skills installed via npx
+.agents/
+skills-lock.json

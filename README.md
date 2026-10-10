@@ -17,7 +17,7 @@
 | Tab | What it does |
 |---|---|
 | **Download** | Paste links (one per line) from YouTube, Instagram, TikTok, X, Facebook and [many more](https://github.com/yt-dlp/yt-dlp/blob/master/supported-sites.md) — as MP4 or MP3. Optional browser-cookie auth for login-protected posts. |
-| **Audio / Video** | Convert between MP4, MOV, MKV, AVI, WebM, MP3, WAV, M4A, FLAC, OGG, AAC. Copies streams when the container allows it, so most conversions are instant and lossless. |
+| **Audio / Video** | Convert between MP4, MOV, MKV, AVI, WebM, MP3, WAV, M4A, FLAC, OGG, AAC — plus **GIF** with a per-clip colour palette, and adjustable frame rate and width. Copies streams when the container allows it, so most conversions are instant and lossless. |
 | **Vocal Split** | Separate any song into **vocals** and **instrumental** using Demucs. Seconds on an NVIDIA GPU. |
 | **Split for Sharing** | Cut a big video into clips under a size limit (2 GB for WhatsApp, 64 MB, custom) or a fixed length. Stream copy, so it's near-instant with no quality loss. |
 | **Image Convert** | JPG, PNG, WebP, BMP, TIFF, GIF, ICO, plus HEIC (iPhone) and EXR (HDR) input. |

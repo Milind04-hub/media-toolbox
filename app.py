@@ -68,7 +68,7 @@ jobs = {}
 
 VIDEO_FORMATS = {"mp4", "mov", "avi", "mkv", "webm"}
 AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "flac", "ogg"}
-ALLOWED_TARGETS = VIDEO_FORMATS | AUDIO_FORMATS
+ALLOWED_TARGETS = VIDEO_FORMATS | AUDIO_FORMATS | {"gif"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".gif"}
 
 # iPhone photos are HEIC; teach Pillow to open them if pillow-heif is installed
@@ -315,10 +315,20 @@ def probe_media(path):
     return duration, (v.group(1) if v else None), (a.group(1) if a else None)
 
 
-def build_convert_cmd(in_path, out_path, target, vcodec, acodec, copy):
+def build_convert_cmd(in_path, out_path, target, vcodec, acodec, copy, opts=None):
     """ffmpeg command for this conversion; copy=True remuxes without re-encoding."""
+    opts = opts or {}
     cmd = [FFMPEG, "-y", "-hide_banner", "-i", in_path]
-    if target in AUDIO_FORMATS:
+    if target == "gif":
+        # GIF holds only 256 colours, so build a palette from the clip itself and
+        # apply it in the same pass — otherwise colours band badly and files balloon.
+        fps = max(1, min(30, int(opts.get("gif_fps", 12))))
+        width = max(64, min(1920, int(opts.get("gif_width", 480))))
+        filters = (f"[0:v]fps={fps},scale={width}:-2:flags=lanczos,split[a][b];"
+                   "[a]palettegen=stats_mode=diff[p];"
+                   "[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle[out]")
+        cmd += ["-filter_complex", filters, "-map", "[out]", "-an", "-loop", "0"]
+    elif target in AUDIO_FORMATS:
         cmd += ["-map", "0:a:0", "-vn"]
         if copy:
             cmd += ["-c:a", "copy"]
@@ -684,10 +694,14 @@ def api_browse():
                     "offset": offset})
 
 
-def convert_one(in_path, out_path, target, job, tag):
+def convert_one(in_path, out_path, target, job, tag, opts=None):
     """Convert one file, copying streams when possible and re-encoding otherwise."""
     job["progress"] = f"{tag}analyzing file..."
     duration, vcodec, acodec = probe_media(in_path)
+    if target == "gif":
+        run_ffmpeg(build_convert_cmd(in_path, out_path, target, vcodec, acodec, False, opts),
+                   job, duration, f"{tag}making GIF")
+        return
     if target in AUDIO_FORMATS:
         can_copy = acodec in COPY_AUDIO.get(target, set())
     else:
@@ -702,11 +716,11 @@ def convert_one(in_path, out_path, target, job, tag):
             pass                                      # fall back to a full re-encode
     label = "converting on GPU" if (target not in AUDIO_FORMATS and target != "avi"
                                     and nvenc_available()) else "converting"
-    run_ffmpeg(build_convert_cmd(in_path, out_path, target, vcodec, acodec, False),
+    run_ffmpeg(build_convert_cmd(in_path, out_path, target, vcodec, acodec, False, opts),
                job, duration, f"{tag}{label}")
 
 
-def convert_worker(job_id, items, target):
+def convert_worker(job_id, items, target, opts=None):
     """items: [(upload_path, original_name)]. Several outputs come back as one ZIP."""
     job = jobs[job_id]
     outputs, errors = [], []
@@ -715,7 +729,7 @@ def convert_worker(job_id, items, target):
         name = f"{safe_base(orig)}.{target}"
         out_path = os.path.join(OUTPUT_DIR, f"{job_id}_{i}_{name}")
         try:
-            convert_one(in_path, out_path, target, job, tag)
+            convert_one(in_path, out_path, target, job, tag, opts)
             outputs.append((name, out_path))
         except Exception as e:
             errors.append(f"{orig}: {str(e)[-300:]}")
@@ -740,9 +754,14 @@ def api_convert():
         return jsonify({"error": "No file uploaded"}), 400
     if target not in ALLOWED_TARGETS:
         return jsonify({"error": f"Unsupported target format: {target}"}), 400
+    try:
+        opts = {"gif_fps": int(request.form.get("gif_fps", 12)),
+                "gif_width": int(request.form.get("gif_width", 480))}
+    except ValueError:
+        return jsonify({"error": "GIF frame rate and width must be numbers"}), 400
     job_id = new_job()
     items = save_uploads(job_id, files)
-    threading.Thread(target=convert_worker, args=(job_id, items, target), daemon=True).start()
+    threading.Thread(target=convert_worker, args=(job_id, items, target, opts), daemon=True).start()
     return jsonify({"job_id": job_id})
 
 
@@ -1295,6 +1314,130 @@ def api_split():
     return jsonify({"job_id": job_id})
 
 
+# ---------------- Pitch track (for the Pitch Perfect singing app) ----------------
+# Download a song, split off the vocals, and measure the singer's pitch every 10 ms.
+# Results are cached per video in output/pitch/<id>/ so each song is processed once.
+
+PITCH_DIR = os.path.join(OUTPUT_DIR, "pitch")
+PITCH_FILES = {"pitch.json", "vocals.mp3", "instrumental.mp3"}
+_pitch_jobs = {}   # video id -> job id while processing, so double clicks don't run twice
+
+
+def _track_id(url):
+    m = re.search(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([\w-]{11})", url)
+    if m:
+        return m.group(1)
+    return hashlib.sha1(url.encode()).hexdigest()[:11]
+
+
+def _pitch_meta(tid):
+    path = os.path.join(PITCH_DIR, tid, "meta.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def pitch_worker(job_id, url, tid):
+    job = jobs[job_id]
+    folder = os.path.join(PITCH_DIR, tid)
+    os.makedirs(folder, exist_ok=True)
+    src = None
+    try:
+        info = {}
+        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True}) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+        src = download_one(url, "mp3", None, f"{job_id}_pt_", job, "")
+
+        job["progress"] = "loading AI model (first run downloads ~80 MB)..."
+        import separator
+        import pitchtrack
+        separator.separate(FFMPEG, src, os.path.join(folder, "vocals.mp3"),
+                           os.path.join(folder, "instrumental.mp3"), "mp3",
+                           progress=lambda m: job.__setitem__("progress", "vocals: " + m))
+
+        job["progress"] = "measuring the singer's pitch..."
+        track = pitchtrack.extract(FFMPEG, os.path.join(folder, "vocals.mp3"))
+        with open(os.path.join(folder, "pitch.json"), "w", encoding="utf-8") as fh:
+            json.dump(track, fh, separators=(",", ":"))
+        meta = {"id": tid, "url": url, "title": info.get("title") or tid,
+                "video_id": tid if re.fullmatch(r"[\w-]{11}", tid) and "youtu" in url else None,
+                "duration": track["duration"], "created": time.time()}
+        with open(os.path.join(folder, "meta.json"), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh)
+        job["meta"] = meta
+        job["status"] = "done"
+        job["progress"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = explain_separation_error(explain_download_error(str(e)))
+        shutil.rmtree(folder, ignore_errors=True)
+    finally:
+        _pitch_jobs.pop(tid, None)
+        if src:
+            try:
+                os.remove(src)
+            except OSError:
+                pass
+
+
+@app.route("/api/pitchtrack", methods=["POST"])
+def api_pitchtrack():
+    url = (request.get_json(force=True).get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
+    tid = _track_id(url)
+    meta = _pitch_meta(tid)
+    if meta:
+        return jsonify({"ready": True, "meta": meta})
+    if tid in _pitch_jobs:
+        return jsonify({"job_id": _pitch_jobs[tid]})
+    job_id = new_job()
+    _pitch_jobs[tid] = job_id
+    threading.Thread(target=pitch_worker, args=(job_id, url, tid), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/pitchtrack/list")
+def api_pitchtrack_list():
+    items = []
+    if os.path.isdir(PITCH_DIR):
+        for tid in os.listdir(PITCH_DIR):
+            meta = _pitch_meta(tid)
+            if meta:
+                items.append(meta)
+    items.sort(key=lambda m: m.get("created", 0), reverse=True)
+    return jsonify(items)
+
+
+@app.route("/api/pitchtrack/<tid>/<name>")
+def api_pitchtrack_file(tid, name):
+    if not re.fullmatch(r"[\w-]{11}", tid) or name not in PITCH_FILES:
+        return jsonify({"error": "not found"}), 404
+    path = os.path.join(PITCH_DIR, tid, name)
+    if not os.path.exists(path):
+        return jsonify({"error": "not found"}), 404
+    return send_file(path)
+
+
+@app.after_request
+def pitch_cors(resp):
+    """Let Pitch Perfect (a separate local page) call the pitch-track endpoints."""
+    origin = request.headers.get("Origin", "")
+    if (request.path.startswith(("/api/pitchtrack", "/api/status/"))
+            and re.match(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", origin)):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Vary"] = "Origin"
+    return resp
+
+
+@app.route("/api/pitchtrack", methods=["OPTIONS"])
+def api_pitchtrack_preflight():
+    return "", 204
+
+
 # ---------------- Job status / file fetch ----------------
 
 @app.route("/api/status/<job_id>")
@@ -1304,6 +1447,8 @@ def api_status(job_id):
         return jsonify({"error": "unknown job"}), 404
     resp = {"status": job["status"], "progress": job["progress"], "error": job["error"],
             "warning": job.get("warning")}
+    if job.get("meta"):
+        resp["meta"] = job["meta"]
     if job["status"] == "done" and job["file"]:
         resp["filename"] = os.path.basename(job["file"])[13:]  # strip "jobid_" prefix
     if job.get("parts"):   # split jobs return each clip separately, not as one ZIP
