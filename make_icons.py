@@ -10,7 +10,7 @@ doc = fitz.open(os.path.join(STATIC, "icon.svg"))
 page = doc[0]
 
 pngs = []
-for size in (16, 32, 48, 64, 128, 256):
+for size in (16, 32, 48, 64, 128, 192, 256, 512):
     zoom = size / page.rect.width
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
     path = os.path.join(STATIC, f"icon-{size}.png")

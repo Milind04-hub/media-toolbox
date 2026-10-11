@@ -25,3 +25,6 @@ config.json
 # third-party agent skills installed via npx
 .agents/
 skills-lock.json
+
+# machine-specific launcher created by the scheduled task
+start-hidden.vbs

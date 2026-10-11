@@ -86,6 +86,83 @@ def new_job():
     return job_id
 
 
+# ---------------- Housekeeping ----------------
+# Results pile up fast (a month of use reached 11 GB), so old ones are swept away.
+# 0 disables it. Files belonging to jobs still running are always kept.
+CLEANUP_HOURS = float(CONFIG.get("cleanup_hours", 24))
+THUMB_CLEANUP_DAYS = float(CONFIG.get("thumb_cleanup_days", 30))
+
+
+def sweep_old_files(verbose=False):
+    """Delete finished results and stray uploads older than the configured age."""
+    if CLEANUP_HOURS <= 0:
+        return 0, 0
+    keep = set()
+    for job in list(jobs.values()):
+        if job.get("status") == "running":
+            keep.update(os.path.abspath(p) for p in
+                        [job.get("file")] + [p for _, p in job.get("parts") or []] if p)
+    cutoff = time.time() - CLEANUP_HOURS * 3600
+    removed = freed = 0
+    for folder in (OUTPUT_DIR, UPLOAD_DIR):
+        for entry in os.scandir(folder):
+            try:
+                if os.path.abspath(entry.path) in keep or entry.stat().st_mtime > cutoff:
+                    continue
+                size = entry.stat().st_size if entry.is_file() else 0
+                if entry.is_dir():
+                    shutil.rmtree(entry.path, ignore_errors=True)
+                else:
+                    os.remove(entry.path)
+                removed += 1
+                freed += size
+            except OSError:
+                continue
+    # thumbnails are tiny but unbounded; trim them on a slower schedule
+    if THUMB_CLEANUP_DAYS > 0 and os.path.isdir(THUMB_DIR):
+        tcut = time.time() - THUMB_CLEANUP_DAYS * 86400
+        for entry in os.scandir(THUMB_DIR):
+            try:
+                if entry.stat().st_mtime < tcut:
+                    os.remove(entry.path)
+            except OSError:
+                continue
+    if verbose and removed:
+        print(f"cleanup: removed {removed} item(s), freed {freed / 1048576:.0f} MB")
+    return removed, freed
+
+
+def keep_awake_loop():
+    """Stop Windows sleeping while a job is running, so long jobs finish.
+
+    Only asks for 'system required' (the screen may still switch off), and the
+    request is dropped the moment nothing is running.
+    """
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+    except (ImportError, AttributeError):
+        return                                   # not Windows: nothing to do
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+    holding = False
+    while True:
+        busy = any(j.get("status") == "running" for j in list(jobs.values()))
+        if busy != holding:
+            kernel32.SetThreadExecutionState(
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED if busy else ES_CONTINUOUS)
+            holding = busy
+        time.sleep(20)
+
+
+def cleanup_loop():
+    while True:
+        time.sleep(3600)
+        try:
+            sweep_old_files(verbose=True)
+        except Exception as e:
+            print(f"cleanup failed: {e}")
+
+
 # Windows caps full paths at 260 chars, so keep generated names short and portable.
 MAX_BASE_LEN = 60
 
@@ -1365,6 +1442,12 @@ if __name__ == "__main__":
     # such as Tailscale, since the app has no password and can browse LIBRARY_ROOTS.
     host = os.environ.get("HOST") or CONFIG.get("host", "127.0.0.1")
     port = int(os.environ.get("PORT") or CONFIG.get("port", 5000))
+    threading.Thread(target=keep_awake_loop, daemon=True).start()
+    if CLEANUP_HOURS > 0:
+        sweep_old_files(verbose=True)
+        threading.Thread(target=cleanup_loop, daemon=True).start()
+        print(f"Results older than {CLEANUP_HOURS:g}h are deleted automatically "
+              f"(set \"cleanup_hours\" in config.json; 0 turns this off)")
     print(f"Open http://127.0.0.1:{port} in your browser")
     if host == "0.0.0.0":
         print(f"Also reachable from your other devices on this network, port {port}")

@@ -5,6 +5,10 @@
   "host": "127.0.0.1",
   "port": 5000,
 
+  "_cleanup_hours": "Results in output/ older than this are deleted automatically (on startup and hourly). Download what you want to keep. 0 turns it off.",
+  "cleanup_hours": 24,
+  "thumb_cleanup_days": 30,
+
   "_library_roots": "Extra folders the 'Choose from this PC' picker may read, as id: [label, path]. Downloads/Videos/Pictures/Desktop are included automatically. Nothing outside these folders is reachable.",
   "library_roots": {
     "icloud": ["iCloud Photos", "F:\\iCloudPhotos\\Photos"],
